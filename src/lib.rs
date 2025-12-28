@@ -5,7 +5,7 @@ use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
 
 #[pyclass]
-pub struct CypherCell {
+struct CypherCell {
     inner: Zeroizing<Vec<u8>>,
     volatile: bool,
     wiped: bool,

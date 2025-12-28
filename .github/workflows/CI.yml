@@ -43,6 +43,6 @@ jobs:
         run: |
           maturin build --out dist
           
-          pip install --find-links=dist cypher_cell
+          pip install --force-reinstall --no-index --find-links=dist cypher_cell
           
           python -m pytest tests/

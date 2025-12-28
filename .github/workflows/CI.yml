@@ -38,12 +38,15 @@ jobs:
           pip install maturin pytest
       - name: Build and Test
         run: |
-          # Cross-platform venv activation
+          # Cross-platform venv activation, build, and test in one block
           if [ "${{ runner.os }}" = "Windows" ]; then
-            .venv\\Scripts\\activate
+            .venv\\Scripts\\activate && \
+            maturin develop && \
+            pytest && \
+            pytest tests/
           else
-            source .venv/bin/activate
+            source .venv/bin/activate && \
+            maturin develop && \
+            pytest && \
+            pytest tests/
           fi
-          maturin develop
-          pytest
-          pytest tests/

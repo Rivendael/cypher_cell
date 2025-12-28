@@ -64,7 +64,7 @@ impl CypherCell {
         slf
     }
 
-    fn __exit__(&mut self, _exc: PyObject, _val: PyObject, _tb: PyObject) {
+    fn __exit__(&mut self, _exc: Py<PyAny>, _val: Py<PyAny>, _tb: Py<PyAny>) {
         self.wipe();
     }
 

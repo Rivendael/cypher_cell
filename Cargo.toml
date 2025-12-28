@@ -8,12 +8,12 @@ name = "cypher_cell"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module"] }
-zeroize = { version = "1.7", features = ["derive"] }
-cfg-if = "1.0"
+pyo3 = { version = "0.27.2", features = ["extension-module"] }
+zeroize = { version = "1.8.2", features = ["derive"] }
+cfg-if = "1.0.4"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_System_Memory"] }
+windows-sys = { version = "0.61.2", features = ["Win32_System_Memory"] }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = "1.0.0-alpha.1"

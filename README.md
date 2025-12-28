@@ -2,7 +2,7 @@
 
 [![Python Versions](https://img.shields.io/pypi/pyversions/cypher_cell)](https://pypi.org/project/cypher_cell/)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Unit Tests](https://github.com/Rivendael/cypher_cell/actions/workflows/unittests.yml/badge.svg)](https://github.com/Rivendael/cypher_cell/actions/workflows/CI.yml)
+[![Unit Tests](https://github.com/Rivendael/cypher_cell/actions/workflows/CI.yml/badge.svg)](https://github.com/Rivendael/cypher_cell/actions/workflows/CI.yml)
 [![Latest Release](https://img.shields.io/github/v/release/Rivendael/cypher_cell)](https://github.com/Rivendael/cypher_cell/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20|%20Linux%20|%20macOS-lightgrey)](https://github.com/Rivendael/cypher_cell)
 [![Rust Backend](https://img.shields.io/badge/backend-rust-orange)](https://github.com/Rivendael/cypher_cell)

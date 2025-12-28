@@ -65,7 +65,7 @@ Python's default memory model is not designed for handling secrets. Sensitive da
 Clone and build locally:
 
 ```bash
-git clone https://github.com/yourusername/cypher_cell.git
+git clone https://github.com/Rivendael/cypher_cell.git
 cd cypher_cell
 pip install maturin
 maturin develop

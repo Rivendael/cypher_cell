@@ -160,6 +160,8 @@ While cypher_cell protects the data within its vault, the act of passing a strin
 
 **Note on `.reveal()`:** When you call `.reveal()`, Python creates a standard, immutable string. While cypher_cell wipes its own internal memory, it cannot wipe the string Python just created. Always use secrets in the narrowest scope possible:
 
+Warning on Literals: Avoid passing string literals directly like CypherCell("my_secret"). Python may intern these strings, keeping them in memory for the duration of the process regardless of what cypher_cell does. Always load from environment variables, files, or buffers.
+
 ```python
 # GOOD: String is short-lived
 authenticate(cell.reveal())

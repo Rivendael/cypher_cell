@@ -1,6 +1,10 @@
 import pytest
 import time
 import gc
+import os
+import pickle
+import threading
+
 from cypher_cell import CypherCell
 
 def test_basic_reveal():
@@ -57,7 +61,6 @@ def test_manual_delete_and_gc():
     del cell
     gc.collect() # Force garbage collection to trigger Rust's Drop
 
-
 def test_reveal_masked_partial():
     cell = CypherCell(b"supersecret")
     # Only last 4 chars visible
@@ -65,13 +68,11 @@ def test_reveal_masked_partial():
     assert masked.endswith("cret")
     assert masked.startswith("*" * (len("supersecret") - 4))
 
-
 def test_reveal_masked_full():
     cell = CypherCell(b"allvisible")
     # If suffix_len >= len, should show all
     masked = cell.reveal_masked(20)
     assert masked == "allvisible"
-
 
 def test_reveal_masked_empty():
     cell = CypherCell(b"wipe-me", volatile=True)
@@ -79,7 +80,6 @@ def test_reveal_masked_empty():
     cell.reveal()
     with pytest.raises(ValueError, match="Cell is wiped."):
         cell.reveal_masked(3)
-
 
 def test_double_wipe():
     cell = CypherCell(b"doublewipe", volatile=True)
@@ -93,13 +93,11 @@ def test_double_wipe():
     with pytest.raises(ValueError):
         cell.reveal()
 
-
 def test_ttl_zero():
     cell = CypherCell(b"instant-expire", ttl_sec=0)
     time.sleep(0.01)
     with pytest.raises(ValueError, match="TTL expired"):
         cell.reveal()
-
 
 def test_bytes_input_and_unicode():
     # Accepts bytes, returns unicode string
@@ -145,10 +143,6 @@ def test_reveal_bytes_after_reveal_string():
     
     with pytest.raises(ValueError, match="Cell is wiped."):
         cell.reveal_bytes()
-
-import os
-import pytest
-from cypher_cell import CypherCell
 
 def test_from_env_loading():
     """Test loading a secret directly from an environment variable."""
@@ -216,3 +210,117 @@ def test_masked_reveal_logic():
     assert cell.reveal_masked(4) == "******7890"
     assert cell.reveal_masked(0) == "**********"
     assert cell.reveal_masked(10) == "1234567890"
+
+def test_string_redaction():
+    """Test that __str__ and __repr__ never leak the secret."""
+    secret = b"super-sensitive-123"
+    cell = CypherCell(secret)
+    
+    # Both should be redacted
+    assert str(cell) == "<CypherCell: [REDACTED]>"
+    assert repr(cell) == "<CypherCell: [REDACTED]>"
+    # Ensure the secret isn't hidden inside the string representation
+    assert "super-sensitive" not in str(cell)
+
+def test_equality_disabled():
+    """Test that direct equality is disabled to prevent non-constant-time leaks."""
+    cell = CypherCell(b"password123")
+    
+    with pytest.raises(TypeError, match="Direct equality comparison is disabled"):
+        # This should trigger our __eq__ override
+        cell == "password123"
+
+def test_bytes_magic_method():
+    """Test the __bytes__ / reveal_bytes functionality."""
+    raw_data = b"\x00\xFF\x00\xFF"
+    cell = CypherCell(raw_data)
+    
+    # Test explicit reveal_bytes
+    assert cell.reveal_bytes() == raw_data
+    # Test the magic method used by bytes() cast
+    assert bytes(cell) == raw_data
+
+def test_masked_reveal_logic():
+    """Test that reveal_masked provides the correct partial visibility."""
+    cell = CypherCell(b"SECRET_KEY_12345")
+    
+    # Test suffix length
+    masked = cell.reveal_masked(suffix_len=5)
+    assert masked == "***********12345"
+    
+    # Test where suffix is longer than the secret
+    assert cell.reveal_masked(suffix_len=50) == "SECRET_KEY_12345"
+
+def test_verify_constant_time():
+    """Test that the verify method works correctly for both success and failure."""
+    cell = CypherCell(b"secure-hash")
+    
+    assert cell.verify(b"secure-hash") is True
+    assert cell.verify(b"wrong-hash") is False
+    assert cell.verify(b"short") is False
+
+def test_pickle_disabled():
+    """Test that CypherCell cannot be pickled/serialized."""
+    cell = CypherCell(b"secret-data")
+    with pytest.raises(TypeError, match="cannot be serialized"):
+        pickle.dumps(cell)
+
+def test_large_secret_handling():
+    """Test that larger binary data is handled correctly (e.g., a large key)."""
+    large_secret = os.urandom(1024 * 10)  # 10KB secret
+    cell = CypherCell(large_secret)
+    
+    assert cell.reveal_bytes() == large_secret
+    # Ensure no crash on wipe
+    cell.wipe_py()
+    with pytest.raises(ValueError):
+        cell.reveal_bytes()
+
+def test_equality_disabled_exhaustive():
+    """Verify that equality is blocked against all types."""
+    cell = CypherCell(b"data")
+    for other in [None, 123, ["data"], {"key": "val"}]:
+        with pytest.raises(TypeError, match="Direct equality comparison is disabled"):
+            cell == other
+
+def test_concurrent_access_smoke():
+    """Smoke test to ensure no crashes during concurrent access/wipe."""
+    cell = CypherCell(b"thread-safe", volatile=True)
+    
+    def access():
+        try:
+            cell.reveal()
+        except ValueError:
+            pass # Wiped by another thread is fine, just shouldn't crash
+
+    threads = [threading.Thread(target=access) for _ in range(10)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+def test_malformed_utf8_reveal():
+    """Test that malformed UTF-8 is caught before creating a Python string."""
+    # 0xFF is invalid UTF-8
+    cell = CypherCell(b"valid" + b"\xff" + b"invalid")
+    
+    with pytest.raises(ValueError, match="Data is not valid UTF-8"):
+        cell.reveal()
+    
+    # reveal_bytes should still work regardless of UTF-8 status
+    assert b"\xff" in cell.reveal_bytes()
+
+def test_empty_secret():
+    """Test behavior with an empty byte string."""
+    cell = CypherCell(b"")
+    assert cell.reveal() == ""
+    assert cell.reveal_bytes() == b""
+    assert cell.reveal_masked(5) == ""
+    assert cell.verify(b"") is True
+
+def test_lock_failure_handling():
+    large_amount = 10 * 1024 * 1024  # 10 MB
+    try:
+        _ = CypherCell(b"\x00" * large_amount)
+    except RuntimeError as e:
+        assert "Failed to lock memory" in str(e)
+    except MemoryError:
+        pass

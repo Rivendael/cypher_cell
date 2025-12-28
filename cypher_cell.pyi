@@ -1,4 +1,4 @@
-from typing import Optional, Type, Any
+from typing import Optional, Type
 from types import TracebackType
 
 class CypherCell:
@@ -58,6 +58,34 @@ class CypherCell:
 
     def __repr__(self) -> str:
         """Returns '<CypherCell: [REDACTED]>' to prevent accidental logging."""
+        ...
+
+    def __str__(self) -> str:
+        """Returns '<CypherCell: [REDACTED]>' to prevent accidental logging."""
+        ...
+    
+    def reveal_bytes(self) -> bytes:
+        """
+        Reveal the stored secret as raw bytes. 
+        
+        Recommended for cryptographic keys or non-UTF-8 binary data.
+        
+        Raises:
+            ValueError: If the cell is wiped or expired.
+        """
+        ...
+    
+    def __eq__(self, other: object) -> Exception:
+        """
+        Disable direct equality comparison to prevent timing attacks.
+        Use the verify() method for constant-time comparison instead.
+        """
+        ...
+
+    def __getstate__(self) -> Exception:
+        """
+        CypherCell objects cannot be serialized (pickled) for security reasons.
+        """
         ...
 
     @classmethod

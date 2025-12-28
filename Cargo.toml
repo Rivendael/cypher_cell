@@ -1,6 +1,6 @@
 [package]
 name = "cypher_cell"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [lib]
@@ -18,3 +18,10 @@ windows-sys = { version = "0.61.2", features = ["Win32_System_Memory"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "1.0.0-alpha.1"
+
+[profile.release]
+opt-level = 3           # Maximum speed/optimization
+lto = "fat"             # Link Time Optimization across all crates
+codegen-units = 1       # Better optimization, though slower to build
+panic = "abort"         # Removes stack unwinding code (smaller, safer binary)
+strip = "symbols"       # Removes debug symbols from the final binary

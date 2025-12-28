@@ -358,7 +358,7 @@ def test_compare_fails_if_wiped():
     
     cell_a.wipe_py()
     
-    with pytest.raises(ValueError, match="one or both cells are wiped"):
+    with pytest.raises(ValueError, match="Cannot compare: one or both cells are wiped."):
         cell_a.compare(cell_b)
 
 pickle_message = "CypherCell objects cannot be serialized (pickled) for security reasons."

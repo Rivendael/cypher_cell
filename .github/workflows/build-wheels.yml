@@ -55,10 +55,13 @@ jobs:
         CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
         CIBW_SKIP: "*-win32 *-manylinux_i686 *-musllinux_* cp38-*"
         CIBW_ARCHS: ${{ matrix.cibw_archs }}
-        # Setting to 11.0 for better compatibility with modern Rust/Maturin
         MACOSX_DEPLOYMENT_TARGET: "11.0"
-        # This tells cibuildwheel to use maturin to build the wheels
-        CIBW_BEFORE_BUILD: "pip install maturin"
+        
+        # We ensure the target is added inside the build context to avoid the "crate for core not found" error
+        CIBW_BEFORE_BUILD: >
+          pip install maturin &&
+          rustup target add ${{ matrix.arch == 'arm64' && 'aarch64-apple-darwin' || (matrix.arch == 'x86_64' && matrix.os == 'macos-latest' && 'x86_64-apple-darwin' || '') }}
+        
         CIBW_BUILD_FRONTEND: "build"
         CIBW_ENVIRONMENT_MACOS: >
           PATH=$HOME/.cargo/bin:$PATH
@@ -67,7 +70,7 @@ jobs:
     - name: Upload wheels
       uses: actions/upload-artifact@v4
       with:
-        name: wheels-${{ matrix.os }}-${{ matrix.arch }}
+        name: wheels-${{ matrix.os-latest || matrix.os }}-${{ matrix.arch }}
         path: ./wheelhouse/*.whl
 
   build-sdist:

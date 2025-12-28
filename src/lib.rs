@@ -5,7 +5,7 @@ use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
 
 #[pyclass]
-struct CypherCell {
+pub struct CypherCell {
     inner: Zeroizing<Vec<u8>>,
     volatile: bool,
     wiped: bool,
@@ -228,13 +228,13 @@ impl CypherCell {
 
     fn __deepcopy__(&self, _memo: &Bound<'_, PyAny>) -> PyResult<()> {
         Err(pyo3::exceptions::PyTypeError::new_err(
-            "CypherCell objects cannot be deep-copied for security reasons.",
+            "CypherCell objects cannot be serialized (pickled) for security reasons.",
         ))
     }
 
     fn __copy__(&self) -> PyResult<()> {
         Err(pyo3::exceptions::PyTypeError::new_err(
-            "CypherCell objects cannot be copied for security reasons.",
+            "CypherCell objects cannot be serialized (pickled) for security reasons.",
         ))
     }
 }

@@ -5,6 +5,7 @@ import os
 import pickle
 import threading
 import copy
+import re
 
 from cypher_cell import CypherCell
 
@@ -360,6 +361,8 @@ def test_compare_fails_if_wiped():
     with pytest.raises(ValueError, match="one or both cells are wiped"):
         cell_a.compare(cell_b)
 
+pickle_message = "CypherCell objects cannot be serialized (pickled) for security reasons."
+
 def test_deepcopy_is_blocked():
     """
     Verify that copy.deepcopy() raises a TypeError.
@@ -367,7 +370,7 @@ def test_deepcopy_is_blocked():
     """
     cell = CypherCell(b"original-data")
     
-    with pytest.raises(TypeError, match="cannot be deep-copied"):
+    with pytest.raises(TypeError, match=re.escape(pickle_message)):
         copy.deepcopy(cell)
 
 def test_shallow_copy_behavior():
@@ -377,5 +380,5 @@ def test_shallow_copy_behavior():
     """
     cell = CypherCell(b"immutable-ish")
     
-    with pytest.raises(TypeError, match="CypherCell objects cannot be copied for security reasons."):
+    with pytest.raises(TypeError, match=re.escape(pickle_message)):
         copy.copy(cell)

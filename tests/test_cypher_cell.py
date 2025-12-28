@@ -4,6 +4,7 @@ import gc
 import os
 import pickle
 import threading
+import copy
 
 from cypher_cell import CypherCell
 
@@ -324,3 +325,57 @@ def test_lock_failure_handling():
         assert "Failed to lock memory" in str(e)
     except MemoryError:
         pass
+
+def test_compare_identical_cells():
+    """Verify that two different cells with identical content return True."""
+    cell_a = CypherCell(b"same-secret")
+    cell_b = CypherCell(b"same-secret")
+    
+    # Secure comparison should succeed
+    assert cell_a.compare(cell_b) is True
+    # Verify it works both ways
+    assert cell_b.compare(cell_a) is True
+
+def test_compare_different_cells():
+    """Verify that cells with different content return False."""
+    cell_a = CypherCell(b"secret-alpha")
+    cell_b = CypherCell(b"secret-omega")
+    
+    assert cell_a.compare(cell_b) is False
+
+def test_compare_different_lengths():
+    """Verify that cells of different lengths return False (constant-time)."""
+    cell_a = CypherCell(b"short")
+    cell_b = CypherCell(b"very-long-secret")
+    
+    assert cell_a.compare(cell_b) is False
+
+def test_compare_fails_if_wiped():
+    """Verify that comparing a wiped cell raises a ValueError."""
+    cell_a = CypherCell(b"data")
+    cell_b = CypherCell(b"data")
+    
+    cell_a.wipe_py()
+    
+    with pytest.raises(ValueError, match="one or both cells are wiped"):
+        cell_a.compare(cell_b)
+
+def test_deepcopy_is_blocked():
+    """
+    Verify that copy.deepcopy() raises a TypeError.
+    This prevents secrets from being duplicated in memory unmanaged.
+    """
+    cell = CypherCell(b"original-data")
+    
+    with pytest.raises(TypeError, match="cannot be deep-copied"):
+        copy.deepcopy(cell)
+
+def test_shallow_copy_behavior():
+    """
+    Standard copy() might still create a reference, but deepcopy must 
+    be explicitly blocked as it attempts to duplicate the underlying Rust data.
+    """
+    cell = CypherCell(b"immutable-ish")
+    
+    with pytest.raises(TypeError, match="CypherCell objects cannot be copied for security reasons."):
+        copy.copy(cell)

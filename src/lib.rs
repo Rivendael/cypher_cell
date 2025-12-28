@@ -169,6 +169,22 @@ impl CypherCell {
         Ok(format!("{}{}", mask_part, visible_part))
     }
 
+    fn compare(&self, other: PyRef<'_, Self>) -> PyResult<bool> {
+        if self.wiped || other.wiped {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Cannot compare: one or both cells are wiped.",
+            ));
+        }
+
+        if self.inner.len() != other.inner.len() {
+            return Ok(false);
+        }
+
+        let is_equal = self.inner.ct_eq(&*other.inner);
+
+        Ok(is_equal.into())
+    }
+
     fn wipe_py(&mut self) {
         self.wipe();
     }
@@ -207,6 +223,18 @@ impl CypherCell {
     fn __getstate__(&self) -> PyResult<()> {
         Err(pyo3::exceptions::PyTypeError::new_err(
             "CypherCell objects cannot be serialized (pickled) for security reasons.",
+        ))
+    }
+
+    fn __deepcopy__(&self, _memo: &Bound<'_, PyAny>) -> PyResult<()> {
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "CypherCell objects cannot be deep-copied for security reasons.",
+        ))
+    }
+
+    fn __copy__(&self) -> PyResult<()> {
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "CypherCell objects cannot be copied for security reasons.",
         ))
     }
 }

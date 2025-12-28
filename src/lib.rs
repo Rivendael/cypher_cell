@@ -1,47 +1,69 @@
 use pyo3::prelude::*;
+use pyo3::types::{PyBytes, PyType};
 use std::time::{Duration, Instant};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
+use subtle::ConstantTimeEq;
 
 #[pyclass]
 struct CypherCell {
-    inner: Vec<u8>,
+    inner: Zeroizing<Vec<u8>>,
     volatile: bool,
+    wiped: bool,
     birth: Instant,
     ttl: Option<Duration>,
 }
 
 impl CypherCell {
-    fn lock_memory(&self) {
-        let ptr = self.inner.as_ptr() as *const std::ffi::c_void;
+    fn try_lock(&self) {
+        let ptr = self.inner.as_ptr() as *mut std::ffi::c_void;
         let len = self.inner.len();
         unsafe {
-            cfg_if::cfg_if! {
-                if #[cfg(unix)] {
-                    let _ = libc::mlock(ptr, len);
-                } else if #[cfg(windows)] {
-                    let _ = windows_sys::Win32::System::Memory::VirtualLock(ptr, len);
+            #[cfg(unix)]
+            {
+                let _ = libc::mlock(ptr, len);
+                #[cfg(target_os = "linux")]
+                {
+                    let _ = libc::madvise(ptr, len, libc::MADV_DONTDUMP);
+                    let _ = libc::madvise(ptr, len, libc::MADV_DONTFORK);
                 }
+            }
+            #[cfg(windows)]
+            {
+                let _ = windows_sys::Win32::System::Memory::VirtualLock(ptr, len);
             }
         }
     }
 
-    fn unlock_memory(&self) {
-        let ptr = self.inner.as_ptr() as *const std::ffi::c_void;
+    fn try_unlock(&self) {
+        let ptr = self.inner.as_ptr() as *mut std::ffi::c_void;
         let len = self.inner.len();
         unsafe {
-            cfg_if::cfg_if! {
-                if #[cfg(unix)] {
-                    let _ = libc::munlock(ptr, len);
-                } else if #[cfg(windows)] {
-                    let _ = windows_sys::Win32::System::Memory::VirtualUnlock(ptr, len);
-                }
-            }
+            #[cfg(unix)]
+            let _ = libc::munlock(ptr, len);
+            #[cfg(windows)]
+            let _ = windows_sys::Win32::System::Memory::VirtualUnlock(ptr, len);
         }
     }
 
     fn wipe(&mut self) {
-        self.unlock_memory();
-        self.inner.zeroize();
+        if !self.wiped {
+            self.try_unlock();
+            self.inner.zeroize();
+            self.wiped = true;
+        }
+    }
+
+    fn check_expiry_and_status(&mut self) -> PyResult<()> {
+        if let Some(limit) = self.ttl {
+            if self.birth.elapsed() > limit {
+                self.wipe();
+                return Err(pyo3::exceptions::PyValueError::new_err("TTL expired"));
+            }
+        }
+        if self.wiped {
+            return Err(pyo3::exceptions::PyValueError::new_err("Cell is wiped."));
+        }
+        Ok(())
     }
 }
 
@@ -51,49 +73,63 @@ impl CypherCell {
     #[pyo3(signature = (data, volatile=false, ttl_sec=None))]
     fn new(data: &[u8], volatile: bool, ttl_sec: Option<u64>) -> Self {
         let cell = CypherCell {
-            inner: data.to_vec(),
+            inner: Zeroizing::new(data.to_vec()),
             volatile,
+            wiped: false,
             birth: Instant::now(),
             ttl: ttl_sec.map(Duration::from_secs),
         };
-        cell.lock_memory();
+        cell.try_lock();
         cell
     }
 
-    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
+    #[classmethod]
+    #[pyo3(signature = (var_name, volatile=false))]
+    fn from_env(_cls: &Bound<'_, PyType>, var_name: &str, volatile: bool) -> PyResult<Self> {
+        let mut val = std::env::var(var_name)
+            .map_err(|_| pyo3::exceptions::PyKeyError::new_err("Env var not found"))?
+            .into_bytes();
+        
+        let cell = CypherCell {
+            inner: Zeroizing::new(val.clone()),
+            volatile,
+            wiped: false,
+            birth: Instant::now(),
+            ttl: None,
+        };
+        cell.try_lock();
+        val.zeroize();
+        Ok(cell)
     }
 
-    fn __exit__(&mut self, _exc: Py<PyAny>, _val: Py<PyAny>, _tb: Py<PyAny>) {
-        self.wipe();
+    fn verify(&self, other: &[u8]) -> bool {
+        if self.wiped || self.inner.len() != other.len() {
+            return false;
+        }
+        self.inner.ct_eq(other).into()
     }
 
     fn reveal(&mut self) -> PyResult<String> {
-        if let Some(limit) = self.ttl {
-            if self.birth.elapsed() > limit {
-                self.wipe();
-                return Err(pyo3::exceptions::PyValueError::new_err("TTL expired"));
-            }
-        }
+        self.check_expiry_and_status()?;
 
-        if self.inner.iter().all(|&x| x == 0) {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Cell is empty/wiped.",
-            ));
-        }
+        let secret = String::from_utf8(self.inner.to_vec())
+            .map_err(|_| pyo3::exceptions::PyValueError::new_err("Data is not valid UTF-8"))?;
 
-        let secret = String::from_utf8_lossy(&self.inner).to_string();
-
-        if self.volatile {
-            self.wipe();
-        }
-
+        if self.volatile { self.wipe(); }
         Ok(secret)
     }
 
+    fn reveal_bytes<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        self.check_expiry_and_status()?;
+
+        let bytes = PyBytes::new(py, &self.inner);
+        if self.volatile { self.wipe(); }
+        Ok(bytes)
+    }
+
     fn reveal_masked(&self, suffix_len: usize) -> PyResult<String> {
-        if self.inner.iter().all(|&x| x == 0) {
-            return Err(pyo3::exceptions::PyValueError::new_err("Cell is empty"));
+        if self.wiped {
+            return Err(pyo3::exceptions::PyValueError::new_err("Cell is wiped."));
         }
 
         let len = self.inner.len();
@@ -103,19 +139,20 @@ impl CypherCell {
 
         let mask_part = "*".repeat(len - suffix_len);
         let visible_part = String::from_utf8_lossy(&self.inner[len - suffix_len..]);
-        
         Ok(format!("{}{}", mask_part, visible_part))
     }
 
-    fn __repr__(&self) -> &'static str {
-        "<CypherCell: [REDACTED]>"
+    fn wipe_py(&mut self) {
+        self.wipe();
     }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> { slf }
+    fn __exit__(&mut self, _e: Py<PyAny>, _v: Py<PyAny>, _t: Py<PyAny>) { self.wipe(); }
+    fn __repr__(&self) -> &'static str { "<CypherCell: [REDACTED]>" }
 }
 
 impl Drop for CypherCell {
-    fn drop(&mut self) {
-        self.wipe();
-    }
+    fn drop(&mut self) { self.wipe(); }
 }
 
 #[pymodule]

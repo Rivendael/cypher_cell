@@ -40,6 +40,5 @@ Documentation = "https://github.com/Rivendael/cypher_cell#readme"
 Issues = "https://github.com/Rivendael/cypher_cell/issues"
 
 [tool.maturin]
-python-source = "src"
 features = ["pyo3/extension-module"]
 include = ["cypher_cell.pyi", "py.typed"]

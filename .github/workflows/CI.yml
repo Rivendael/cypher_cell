@@ -20,7 +20,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -41,12 +41,8 @@ jobs:
       - name: Build and Test
         shell: bash
         run: |
-          # 1. Build the wheel into a temporary folder
           maturin build --out dist
           
-          # 2. Install the wheel we just built
-          # Using a wildcard to find the .whl file in the dist folder
           pip install --find-links=dist cypher_cell
           
-          # 3. Run tests using the installed module
           python -m pytest tests/

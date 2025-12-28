@@ -16,7 +16,7 @@ def test_volatile_mode():
     cell = CypherCell(b"one-time-use", volatile=True)
     assert cell.reveal() == "one-time-use"
     
-    with pytest.raises(ValueError, match="Cell is empty"):
+    with pytest.raises(ValueError, match="Cell is wiped."):
         cell.reveal()
 
 def test_ttl_expiration():
@@ -39,7 +39,7 @@ def test_context_manager():
         assert cell.reveal() == "context-secret"
     
     # Outside the block, it should be wiped
-    with pytest.raises(ValueError, match="Cell is empty"):
+    with pytest.raises(ValueError, match="Cell is wiped."):
         cell.reveal()
 
 def test_repr_security():
@@ -77,7 +77,7 @@ def test_reveal_masked_empty():
     cell = CypherCell(b"wipe-me", volatile=True)
     # Wipe the cell
     cell.reveal()
-    with pytest.raises(ValueError, match="Cell is empty"):
+    with pytest.raises(ValueError, match="Cell is wiped."):
         cell.reveal_masked(3)
 
 
@@ -107,3 +107,112 @@ def test_bytes_input_and_unicode():
     result = cell.reveal()
     assert isinstance(result, str)
     assert "✓" in result
+
+def test_reveal_bytes_binary_data():
+    """Test that reveal_bytes can handle raw binary that isn't valid UTF-8."""
+    raw_data = b"\xff\xfe\xfd\x00\x01\x02"
+    cell = CypherCell(raw_data)
+    
+    result = cell.reveal_bytes()
+    assert isinstance(result, bytes)
+    assert result == raw_data
+    
+    # We now expect a ValueError with our custom message
+    with pytest.raises(ValueError, match="Data is not valid UTF-8"):
+        cell.reveal()
+
+def test_reveal_bytes_volatile():
+    """Test that reveal_bytes also respects the volatile 'burn-after-reading' flag."""
+    cell = CypherCell(b"volatile-bytes", volatile=True)
+    assert cell.reveal_bytes() == b"volatile-bytes"
+    
+    with pytest.raises(ValueError, match="Cell is wiped."):
+        cell.reveal_bytes()
+
+def test_reveal_bytes_ttl():
+    """Test that reveal_bytes respects the TTL expiration."""
+    cell = CypherCell(b"expiring-bytes", ttl_sec=0)
+    # Give the CPU a millisecond to let the clock tick
+    time.sleep(0.01)
+    
+    with pytest.raises(ValueError, match="TTL expired"):
+        cell.reveal_bytes()
+
+def test_reveal_bytes_after_reveal_string():
+    """Test that once a cell is wiped via reveal(), reveal_bytes() also fails."""
+    cell = CypherCell(b"cross-check", volatile=True)
+    cell.reveal() # Trigger volatile wipe
+    
+    with pytest.raises(ValueError, match="Cell is wiped."):
+        cell.reveal_bytes()
+
+import os
+import pytest
+from cypher_cell import CypherCell
+
+def test_from_env_loading():
+    """Test loading a secret directly from an environment variable."""
+    os.environ["MY_APP_SECRET"] = "env-vault-test"
+    try:
+        # Load directly from env
+        cell = CypherCell.from_env("MY_APP_SECRET", volatile=True)
+        
+        # Verify it loaded correctly
+        assert cell.reveal() == "env-vault-test"
+        
+        # Verify volatile worked
+        with pytest.raises(ValueError, match="Cell is wiped."):
+            cell.reveal()
+    finally:
+        # Cleanup env for safety
+        if "MY_APP_SECRET" in os.environ:
+            del os.environ["MY_APP_SECRET"]
+
+def test_from_env_missing():
+    """Test that from_env raises KeyError if the variable doesn't exist."""
+    with pytest.raises(KeyError):
+        CypherCell.from_env("NON_EXISTENT_VAR_12345")
+
+def test_verify_constant_time_logic():
+    """Test the constant-time equality verification."""
+    secret = b"secure-password-123"
+    cell = CypherCell(secret)
+    
+    # Correct match
+    assert cell.verify(b"secure-password-123") is True
+    
+    # Incorrect matches
+    assert cell.verify(b"wrong-password") is False
+    assert cell.verify(b"secure-password-122") is False # Off by one
+    assert cell.verify(b"") is False # Empty
+
+def test_verify_after_wipe():
+    """Test that verify returns False once the cell is wiped."""
+    cell = CypherCell(b"ephemeral", volatile=True)
+    assert cell.verify(b"ephemeral") is True
+    
+    # Reveal triggers wipe
+    cell.reveal()
+    
+    # Should now fail verification
+    assert cell.verify(b"ephemeral") is False
+
+def test_binary_reveal_bytes_hardened():
+    """Test that reveal_bytes handles raw binary keys (important for crypto)."""
+    # 32 bytes of high-entropy binary data (not valid UTF-8)
+    raw_key = os.urandom(32)
+    cell = CypherCell(raw_key)
+    
+    # reveal() should fail due to UTF-8 validation
+    with pytest.raises(ValueError, match="Data is not valid UTF-8"):
+        cell.reveal()
+        
+    # reveal_bytes() should work perfectly
+    assert cell.reveal_bytes() == raw_key
+
+def test_masked_reveal_logic():
+    """Ensure reveal_masked works as expected (sanity check for the restored method)."""
+    cell = CypherCell(b"1234567890")
+    assert cell.reveal_masked(4) == "******7890"
+    assert cell.reveal_masked(0) == "**********"
+    assert cell.reveal_masked(10) == "1234567890"

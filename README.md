@@ -1,5 +1,3 @@
-
-
 # cypher_cell
 
 [![Python Versions](https://img.shields.io/pypi/pyversions/cypher_cell)](https://pypi.org/project/cypher_cell/)
@@ -28,6 +26,7 @@ Python's default memory model is not designed for handling secrets. Sensitive da
 - Secure handling of ephemeral secrets (e.g., one-time tokens, session keys)
 - Compliance with security standards that require memory zeroization
 
+
 ## Features
 
 - **🔒 Memory Locking:** Prevents secrets from being swapped to disk (OS-level protection).
@@ -35,6 +34,31 @@ Python's default memory model is not designed for handling secrets. Sensitive da
 - **👻 Volatile Mode:** "Burn-after-reading" logic—the cell wipes itself immediately after one access.
 - **⏳ Time-To-Live (TTL):** Secrets automatically vanish after a configurable duration.
 - **🛡️ Anti-Leak repr:** Prevents accidental logging; `print(cell)` always shows `[REDACTED]`.
+
+---
+
+
+## 🛡️ Advanced Hardening Features
+
+`cypher_cell` includes several advanced memory and security hardening techniques beyond standard secret management:
+
+| Feature            | Implementation         | Benefit                                                                 |
+|--------------------|-----------------------|-------------------------------------------------------------------------|
+| Direct Env Loading | `from_env`            | Secrets loaded directly from environment variables, never touching Python's heap. |
+| Timing Protection  | `verify` (constant-time)| Protects against timing attacks by using constant-time comparison for secret verification. |
+| Anti-Core Dump     | `MADV_DONTDUMP`       | On Linux, secrets are excluded from core dumps if the process crashes.   |
+| Anti-Fork          | `MADV_DONTFORK`       | Prevents child processes from inheriting secret memory regions.          |
+| Binary Safety      | `reveal_bytes`        | Safely handles raw cryptographic keys and binary secrets, even if not valid UTF-8. |
+
+### Implementation Details
+
+- **Direct Env Loading**: `CypherCell.from_env("VAR")` loads secrets directly from environment variables, minimizing exposure to Python's garbage-collected memory.
+- **Timing Protection**: The `verify()` method uses constant-time comparison to prevent attackers from inferring secrets via timing analysis.
+- **Anti-Core Dump**: On Linux, memory is marked with `MADV_DONTDUMP` so secrets are never written to disk in crash dumps.
+- **Anti-Fork**: Memory is marked with `MADV_DONTFORK` so child processes cannot inherit secret memory.
+- **Binary Safety**: `reveal_bytes()` allows safe handling of raw binary secrets (e.g., cryptographic keys) that may not be valid UTF-8, avoiding crashes and leaks.
+
+---
 
 ## 🚀 Installation
 
@@ -47,7 +71,11 @@ pip install maturin
 maturin develop
 ```
 
+
+
 ## 🛠 Usage
+
+> ⚠️ **Pro Tip:** To prevent the secret from ever hitting the Python heap, avoid `CypherCell(b"my-secret")`. Instead, use `CypherCell.from_env("MY_SECRET")` or (in future) `CypherCell.from_file("/path/to/key")` to load secrets directly from secure sources.
 
 ### 1. Basic Secure Vault
 Keep a secret locked in RAM and ensure it is wiped as soon as you are done.
@@ -79,6 +107,39 @@ cell = CypherCell(b"SK-7721-9904-1234")
 print(cell.reveal_masked(suffix_len=4))  # Output: *************1234
 ```
 
+### 4. Load Secret Directly from Environment
+Avoids Python heap exposure by loading secrets straight from environment variables.
+
+```python
+import os
+from cypher_cell import CypherCell
+
+os.environ["MY_SECRET"] = "env-value"
+cell = CypherCell.from_env("MY_SECRET")
+print(cell.reveal())  # env-value
+```
+
+### 5. Constant-Time Secret Verification
+Protects against timing attacks when checking secrets.
+
+```python
+cell = CypherCell(b"top-secret")
+if cell.verify(b"top-secret"):
+    print("Access granted!")
+else:
+    print("Access denied!")
+```
+
+### 6. Safe Binary Secret Handling
+Safely work with raw cryptographic keys or binary data.
+
+```python
+key = b"\x01\x02\x03\x04\x05\x06"
+cell = CypherCell(key)
+raw = cell.reveal_bytes()
+assert raw == key
+```
+
 ---
 
 
@@ -89,6 +150,24 @@ print(cell.reveal_masked(suffix_len=4))  # Output: *************1234
 - **Creation:** Data is copied into a `Vec<u8>` in Rust.
 - **Locking:** Calls `libc::mlock` (Unix) or `VirtualLock` (Windows) to pin memory to RAM.
 - **Destruction:** When the Python reference count hits zero or `__exit__` is called, Rust executes the `Drop` trait, which calls `zeroize` and then unlocks the memory.
+
+---
+
+
+## Known Weaknesses & Usage Tips
+
+While cypher_cell protects the data within its vault, the act of passing a string to `CypherCell` or calling `.reveal()` creates temporary copies in Python's unmanaged memory. For maximum security, use the context manager and minimize the lifetime of the revealed string.
+
+**Note on `.reveal()`:** When you call `.reveal()`, Python creates a standard, immutable string. While cypher_cell wipes its own internal memory, it cannot wipe the string Python just created. Always use secrets in the narrowest scope possible:
+
+```python
+# GOOD: String is short-lived
+authenticate(cell.reveal())
+
+# BAD: Secret lingers in the 'key' variable
+key = cell.reveal()
+authenticate(key)
+```
 
 ---
 

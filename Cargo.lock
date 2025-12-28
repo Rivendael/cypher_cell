@@ -21,6 +21,7 @@ dependencies = [
  "cfg-if",
  "libc 1.0.0-alpha.1",
  "pyo3",
+ "subtle",
  "windows-sys",
  "zeroize",
 ]
@@ -157,6 +158,12 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
+
+[[package]]
+name = "subtle"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "syn"

@@ -1,5 +1,13 @@
 
+
 # cypher_cell
+
+[![Python Versions](https://img.shields.io/pypi/pyversions/cypher_cell)](https://pypi.org/project/cypher_cell/)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Unit Tests](https://github.com/Rivendael/cypher_cell/actions/workflows/unittests.yml/badge.svg)](https://github.com/Rivendael/cypher_cell/actions/workflows/CI.yml)
+[![Latest Release](https://img.shields.io/github/v/release/Rivendael/cypher_cell)](https://github.com/Rivendael/cypher_cell/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%20|%20Linux%20|%20macOS-lightgrey)](https://github.com/Rivendael/cypher_cell)
+[![Rust Backend](https://img.shields.io/badge/backend-rust-orange)](https://github.com/Rivendael/cypher_cell)
 
 **Hardened, self-destructing memory cells for Python secrets, powered by Rust.**
 
@@ -10,6 +18,7 @@
 - **Ephemeral:** Optionally destroyed after a single access or a configurable time-to-live (TTL).
 - **Leak-resistant:** Never exposed in logs, tracebacks, or accidental prints.
 
+
 ## Why use cypher_cell?
 
 Python's default memory model is not designed for handling secrets. Sensitive data can be copied, cached, or swapped to disk without your control. Attackers with access to memory dumps, swap files, or process introspection tools can easily recover secrets. `cypher_cell` is designed for developers and security engineers who need:
@@ -19,54 +28,47 @@ Python's default memory model is not designed for handling secrets. Sensitive da
 - Secure handling of ephemeral secrets (e.g., one-time tokens, session keys)
 - Compliance with security standards that require memory zeroization
 
-**How it works:**
+## Features
 
-`cypher_cell` uses Rust's safety and low-level memory control to allocate, lock, and zeroize memory. The Python API is simple and ergonomic, supporting context management, burn-after-read, and TTL expiry. The Rust backend leverages `mlock`/`VirtualLock` and the `zeroize` crate for robust security.
+- **🔒 Memory Locking:** Prevents secrets from being swapped to disk (OS-level protection).
+- **🧹 Guaranteed Zeroization:** Memory is physically overwritten with zeros the moment the object is dropped or expires.
+- **👻 Volatile Mode:** "Burn-after-reading" logic—the cell wipes itself immediately after one access.
+- **⏳ Time-To-Live (TTL):** Secrets automatically vanish after a configurable duration.
+- **🛡️ Anti-Leak repr:** Prevents accidental logging; `print(cell)` always shows `[REDACTED]`.
 
-✨ Features
-🔒 Memory Locking (mlock): Prevents secrets from being swapped to the hard drive (OS-level protection).
+## 🚀 Installation
 
-🧹 Guaranteed Zeroization: Memory is physically overwritten with zeros the moment the object is dropped or expires.
+Clone and build locally:
 
-👻 Volatile Mode: "Burn-after-reading" logic—the cell wipes itself immediately after one access.
-
-⏳ Time-To-Live (TTL): Secrets automatically vanish after a configurable duration.
-
-🛡️ Anti-Leak repr: Prevents accidental logging; print(cell) always shows [REDACTED].
-
-🚀 Installation
-Bash
-
-# Clone and build locally
+```bash
 git clone https://github.com/yourusername/cypher_cell.git
 cd cypher_cell
 pip install maturin
 maturin develop
-🛠 Usage
-1. Basic Secure Vault
+```
+
+## 🛠 Usage
+
+### 1. Basic Secure Vault
 Keep a secret locked in RAM and ensure it is wiped as soon as you are done.
 
-Python
-
+```python
 from cypher_cell import CypherCell
 
 # Use as a Context Manager for maximum safety
 with CypherCell(b"super-secret-key") as cell:
     # Use the secret
     db_connect(cell.reveal())
-
 # Memory is now zeroed and unlocked
-### 2. The "Mission Impossible" Cell (Volatile + TTL)
-Create a secret that disappears after one read **OR** 30 seconds, whichever comes first.
+```
+
+### 2. "Mission Impossible" Cell (Volatile + TTL)
+Create a secret that disappears after one read **or** 30 seconds, whichever comes first.
 
 ```python
 vault = CypherCell(b"transient-key", volatile=True, ttl_sec=30)
-
-# This works
-print(vault.reveal())
-
-# This raises a ValueError (already wiped)
-print(vault.reveal())
+print(vault.reveal())  # Works
+print(vault.reveal())  # Raises ValueError (already wiped)
 ```
 
 ### 3. Masked Debugging
@@ -74,25 +76,26 @@ Reveal only what you need for logs.
 
 ```python
 cell = CypherCell(b"SK-7721-9904-1234")
-print(cell.reveal_masked(suffix_len=4))
-# Output: *************1234
+print(cell.reveal_masked(suffix_len=4))  # Output: *************1234
 ```
 
 ---
+
 
 ## 🏗 Architecture
 
 **cypher_cell** bridges Python with low-level Rust primitives:
 
 - **Creation:** Data is copied into a `Vec<u8>` in Rust.
-- **Locking:** We call `libc::mlock` (Unix) or `VirtualLock` (Windows) to pin the memory to RAM.
+- **Locking:** Calls `libc::mlock` (Unix) or `VirtualLock` (Windows) to pin memory to RAM.
 - **Destruction:** When the Python reference count hits zero or `__exit__` is called, Rust executes the `Drop` trait, which calls `zeroize` and then unlocks the memory.
 
 ---
 
+
 ## 🧪 Testing
 
-The project includes a robust pytest suite to verify memory states:
+Run the test suite with:
 
 ```bash
 pytest tests/

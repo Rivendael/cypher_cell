@@ -41,6 +41,11 @@ impl CypherCell {
                         "Failed to lock memory",
                     ));
                 }
+                const MADV_DONTFORK: i32 = 9;
+                const MADV_DONTDUMP: i32 = 16;
+
+                libc::madvise(ptr, len, MADV_DONTFORK);
+                libc::madvise(ptr, len, MADV_DONTDUMP);
             }
             #[cfg(windows)]
             {
@@ -118,9 +123,15 @@ impl CypherCell {
         #[cfg(windows)]
         let raw_bytes = {
             use std::os::windows::ffi::OsStrExt;
-            let wide: Vec<u16> = os_val.encode_wide().collect();
-            let _zero_wide = Zeroizing::new(wide);
-            String::from_utf16_lossy(&_zero_wide).into_bytes()
+            let wide_chars: Vec<u16> = os_val.encode_wide().collect();
+            let mut wide_wrapper = Zeroizing::new(wide_chars);
+
+            let utf8_str = String::from_utf16(&wide_wrapper).map_err(|_| {
+                pyo3::exceptions::PyValueError::new_err("Invalid Unicode in env var")
+            })?;
+
+            let bytes = utf8_str.into_bytes();
+            bytes
         };
 
         let cell = CypherCell {

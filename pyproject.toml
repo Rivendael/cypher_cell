@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "cypher_cell"
-version = "0.1.5"
+version = "0.1.6"
 description = "Hardened, self-destructing memory cells for Python secrets, powered by Rust."
 readme = "README.md"
 authors = [

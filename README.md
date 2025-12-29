@@ -7,13 +7,17 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%20|%20Linux%20|%20macOS-lightgrey)](https://github.com/Rivendael/cypher_cell)
 [![Rust Backend](https://img.shields.io/badge/backend-rust-orange)](https://github.com/Rivendael/cypher_cell)
 
+
 **Hardened, self-destructing memory cells for Python secrets, powered by Rust.**
 
-`cypher_cell` is a Python extension module (written in Rust) that provides a secure, zero-leakage memory container for sensitive data such as API keys, passwords, cryptographic material, and tokens. Unlike standard Python strings and bytes, which are immutable, interned, and can linger in RAM or swap, `cypher_cell` ensures your secrets are:
 
+`cypher_cell` now uses a **Scoped View Pattern**: secrets are only accessible via a temporary `CypherView` handle, obtained by entering a context manager (`with` block). Sensitive data is not directly accessible from the `CypherCell` instance. The view is only valid within the context and is automatically invalidated when the block exits.
+
+Key security features:
 - **Locked in RAM:** Prevented from being swapped to disk using OS-level memory locking.
 - **Zeroized:** Overwritten with zeros immediately when no longer needed, leaving no trace in memory.
-- **Ephemeral:** Optionally destroyed after a single access or a configurable time-to-live (TTL).
+- **Scoped Access:** Data is only accessible via a `CypherView` inside a `with` block. Access outside the block raises `ValueError: View expired`.
+- **Volatile & TTL:** Optionally destroyed after a single access or a configurable time-to-live (TTL).
 - **Leak-resistant:** Never exposed in logs, tracebacks, or accidental prints.
 
 
@@ -27,20 +31,25 @@ Python's default memory model is not designed for handling secrets. Sensitive da
 - Compliance with security standards that require memory zeroization
 
 
+
+
 ## Features
 
-- **🔒 Memory Locking:** Prevents secrets from being swapped to disk (OS-level protection).
-- **🧹 Guaranteed Zeroization:** Memory is physically overwritten with zeros the moment the object is dropped or expires.
-- **👻 Volatile Mode:** "Burn-after-reading" logic—the cell wipes itself immediately after one access.
-- **⏳ Time-To-Live (TTL):** Secrets automatically vanish after a configurable duration.
+- **String and Bytes Support:** `CypherCell` now accepts both `bytes` and `str` as input. Passing a string is supported for convenience, but is **less secure** than passing bytes (see below).
+- **Scoped View Pattern:** Secrets are only accessible via a `CypherView` object, valid only inside a `with` block.
+- **Automatic Invalidation:** Exiting the context manager invalidates the view; further access raises `ValueError: View expired`.
+- **Volatile Mode:** If `volatile=True`, the cell is wiped (zeroized) immediately after the context exits.
+- **TTL Enforcement:** Time-To-Live is checked both when entering the context and when accessing the view.
+- **Memory Locking:** Prevents secrets from being swapped to disk (OS-level protection).
 - **🛡️ Anti-Leak repr:** Prevents accidental logging; `print(cell)` always shows `[REDACTED]`.
 
 ---
 
 
+
 ## 🛡️ Advanced Hardening Features
 
-`cypher_cell` includes several advanced memory and security hardening techniques beyond standard secret management:
+`cypher_cell` includes advanced memory and security hardening:
 
 | Feature            | Implementation         | Benefit                                                                 |
 |--------------------|-----------------------|-------------------------------------------------------------------------|
@@ -48,7 +57,7 @@ Python's default memory model is not designed for handling secrets. Sensitive da
 | Timing Protection  | `verify` (constant-time)| Protects against timing attacks by using constant-time comparison for secret verification. |
 | Anti-Core Dump     | `MADV_DONTDUMP`       | On Linux, secrets are excluded from core dumps if the process crashes.   |
 | Anti-Fork          | `MADV_DONTFORK`       | Prevents child processes from inheriting secret memory regions.          |
-| Binary Safety      | `reveal_bytes`        | Safely handles raw cryptographic keys and binary secrets, even if not valid UTF-8. |
+| Binary Safety      | `bytes(view)`         | Safely handles raw cryptographic keys and binary secrets, even if not valid UTF-8. |
 
 ### Implementation Details
 
@@ -56,9 +65,10 @@ Python's default memory model is not designed for handling secrets. Sensitive da
 - **Timing Protection**: The `verify()` method uses constant-time comparison to prevent attackers from inferring secrets via timing analysis.
 - **Anti-Core Dump**: On Linux, memory is marked with `MADV_DONTDUMP` so secrets are never written to disk in crash dumps.
 - **Anti-Fork**: Memory is marked with `MADV_DONTFORK` so child processes cannot inherit secret memory.
-- **Binary Safety**: `reveal_bytes()` allows safe handling of raw binary secrets (e.g., cryptographic keys) that may not be valid UTF-8, avoiding crashes and leaks.
+- **Binary Safety**: Use `bytes(view)` for raw binary secrets. Use `str(view)` for UTF-8 strings (raises if invalid).
 
 ---
+
 
 ## 🚀 Installation
 
@@ -73,41 +83,48 @@ maturin develop
 
 
 
+
 ## 🛠 Usage
 
 > ⚠️ **Pro Tip:** To prevent the secret from ever hitting the Python heap, avoid `CypherCell(b"my-secret")`. Instead, use `CypherCell.from_env("MY_SECRET")` or (in future) `CypherCell.from_file("/path/to/key")` to load secrets directly from secure sources.
 
-### 1. Basic Secure Vault
+
+
+### 1. Basic Secure Vault (Scoped View)
 Keep a secret locked in RAM and ensure it is wiped as soon as you are done.
 
 ```python
 from cypher_cell import CypherCell
 
-# Use as a Context Manager for maximum safety
-with CypherCell(b"super-secret-key") as cell:
-    # Use the secret
-    db_connect(cell.reveal())
-# Memory is now zeroed and unlocked
+# You can now pass either bytes or str to CypherCell:
+with CypherCell("super-secret-key") as view:  # str input (less secure)
+    secret_str = str(view)
+    db_connect(secret_str)
+
+with CypherCell(b"super-secret-key") as view:  # bytes input (recommended)
+    secret_bytes = bytes(view)
+    db_connect(secret_bytes)
+# After the block, view is invalidated and memory is zeroed
 ```
+
 
 ### 2. "Mission Impossible" Cell (Volatile + TTL)
 Create a secret that disappears after one read **or** 30 seconds, whichever comes first.
 
 ```python
 vault = CypherCell(b"transient-key", volatile=True, ttl_sec=30)
-print(vault.reveal())  # Works
-print(vault.reveal())  # Raises ValueError (already wiped)
+with vault as view:
+    print(bytes(view))  # Works
+# After context exit, vault is wiped and cannot be accessed again
+try:
+    with vault as view:
+        print(bytes(view))
+except ValueError:
+    print("Cell is wiped")
 ```
 
-### 3. Masked Debugging
-Reveal only what you need for logs.
 
-```python
-cell = CypherCell(b"SK-7721-9904-1234")
-print(cell.reveal_masked(suffix_len=4))  # Output: *************1234
-```
-
-### 4. Load Secret Directly from Environment
+### 3. Load Secret Directly from Environment
 Avoids Python heap exposure by loading secrets straight from environment variables.
 
 ```python
@@ -116,10 +133,12 @@ from cypher_cell import CypherCell
 
 os.environ["MY_SECRET"] = "env-value"
 cell = CypherCell.from_env("MY_SECRET")
-print(cell.reveal())  # env-value
+with cell as view:
+    print(str(view))  # env-value
 ```
 
-### 5. Constant-Time Secret Verification
+
+### 4. Constant-Time Secret Verification
 Protects against timing attacks when checking secrets.
 
 ```python
@@ -130,48 +149,67 @@ else:
     print("Access denied!")
 ```
 
-### 6. Safe Binary Secret Handling
+
+### 5. Safe Binary Secret Handling
 Safely work with raw cryptographic keys or binary data.
 
 ```python
 key = b"\x01\x02\x03\x04\x05\x06"
 cell = CypherCell(key)
-raw = cell.reveal_bytes()
-assert raw == key
+with cell as view:
+    raw = bytes(view)
+    assert raw == key
+```
+
+### 6. Compare two CypherCell Objects
+
+```python
+# Compare two secure cells without revealing secrets to the Python heap
+cell_a = CypherCell.from_env("MASTER_KEY")
+cell_b = CypherCell(b"MASTER_KEY_VALUE")
+
+if cell_a.compare(cell_b):
+    print("Keys match!")
 ```
 
 ---
+
 
 
 ## 🏗 Architecture
 
 **cypher_cell** bridges Python with low-level Rust primitives:
 
-- **Creation:** Data is copied into a `Vec<u8>` in Rust.
+- **Creation:** Data is copied into a `Vec<u8>` in Rust and locked in RAM.
+- **Scoped View:** Access to secrets is only possible via a temporary `CypherView` object, valid inside a context manager.
 - **Locking:** Calls `libc::mlock` (Unix) or `VirtualLock` (Windows) to pin memory to RAM.
-- **Destruction:** When the Python reference count hits zero or `__exit__` is called, Rust executes the `Drop` trait, which calls `zeroize` and then unlocks the memory.
+- **Destruction:** When the context exits or TTL expires, Rust executes the `Drop` trait, which calls `zeroize` and then unlocks the memory.
 
 ---
+
+
+authenticate(key)
 
 
 ## Known Weaknesses & Usage Tips
 
-While cypher_cell protects the data within its vault, the act of passing a string to `CypherCell` or calling `.reveal()` creates temporary copies in Python's unmanaged memory. For maximum security, use the context manager and minimize the lifetime of the revealed string.
 
-**Note on `.reveal()`:** When you call `.reveal()`, Python creates a standard, immutable string. While cypher_cell wipes its own internal memory, it cannot wipe the string Python just created. Always use secrets in the narrowest scope possible:
-
-Warning on Literals: Avoid passing string literals directly like CypherCell("my_secret"). Python may intern these strings, keeping them in memory for the duration of the process regardless of what cypher_cell does. Always load from environment variables, files, or buffers.
+Security Tip: While CypherCell safely locks and zeroizes the data it holds, passing a standard Python str or bytes literal (e.g., CypherCell("secret")) leaves a temporary copy in Python's unmanaged heap. For maximum protection against memory forensics, use CypherCell.from_env() or load secrets into a bytearray that you zero out manually after the cell is created.
 
 ```python
-# GOOD: String is short-lived
-authenticate(cell.reveal())
+...existing code...
+# GOOD: Data is short-lived and only accessible inside the context
+with cell as view:
+    authenticate(bytes(view))
 
-# BAD: Secret lingers in the 'key' variable
-key = cell.reveal()
+# BAD: Secret lingers in the 'key' variable outside the context
+with cell as view:
+    key = bytes(view)
 authenticate(key)
 ```
 
 ---
+
 
 
 ## 🧪 Testing

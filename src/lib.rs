@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyString, PyType};
+use pyo3::types::{PyBytes, PyType};
 use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
@@ -11,77 +11,62 @@ struct CypherCell {
     wiped: bool,
     birth: Instant,
     ttl: Option<Duration>,
+    active_view: Option<Py<CypherView>>,
+}
+
+impl Drop for CypherCell {
+    fn drop(&mut self) {
+        self.wipe();
+    }
+}
+
+#[pyclass]
+struct CypherView {
+    parent: Py<CypherCell>,
+    is_active: bool,
 }
 
 impl CypherCell {
     fn try_lock(&self) -> PyResult<()> {
         let ptr = self.inner.as_ptr() as *mut std::ffi::c_void;
         let len = self.inner.len();
-
         if len == 0 {
             return Ok(());
         }
-
         unsafe {
             #[cfg(unix)]
             {
                 if libc::mlock(ptr, len) != 0 {
-                    return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
-                        "Failed to lock memory (mlock): {}",
-                        std::io::Error::last_os_error()
-                    )));
-                }
-                #[cfg(target_os = "linux")]
-                {
-                    // advise is "best effort" for hardening, but we'll still check
-                    let _ = libc::madvise(ptr, len, libc::MADV_DONTDUMP);
-                    let _ = libc::madvise(ptr, len, libc::MADV_DONTFORK);
+                    return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                        "Failed to lock memory",
+                    ));
                 }
             }
-
             #[cfg(windows)]
             {
                 if windows_sys::Win32::System::Memory::VirtualLock(ptr, len) == 0 {
-                    return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
-                        "Failed to lock memory (VirtualLock): {}",
-                        std::io::Error::last_os_error()
-                    )));
+                    return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                        "Failed to lock memory",
+                    ));
                 }
             }
         }
         Ok(())
-    }
-
-    fn try_unlock(&self) {
-        let ptr = self.inner.as_ptr() as *mut std::ffi::c_void;
-        let len = self.inner.len();
-        unsafe {
-            #[cfg(unix)]
-            let _ = libc::munlock(ptr, len);
-            #[cfg(windows)]
-            let _ = windows_sys::Win32::System::Memory::VirtualUnlock(ptr, len);
-        }
     }
 
     fn wipe(&mut self) {
         if !self.wiped {
-            self.try_unlock();
+            let ptr = self.inner.as_ptr() as *mut std::ffi::c_void;
+            let len = self.inner.len();
+            unsafe {
+                #[cfg(unix)]
+                let _ = libc::munlock(ptr, len);
+                #[cfg(windows)]
+                let _ = windows_sys::Win32::System::Memory::VirtualUnlock(ptr, len);
+            }
             self.inner.zeroize();
             self.wiped = true;
         }
-    }
-
-    fn check_expiry_and_status(&mut self) -> PyResult<()> {
-        if let Some(limit) = self.ttl {
-            if self.birth.elapsed() > limit {
-                self.wipe();
-                return Err(pyo3::exceptions::PyValueError::new_err("TTL expired"));
-            }
-        }
-        if self.wiped {
-            return Err(pyo3::exceptions::PyValueError::new_err("Cell is wiped."));
-        }
-        Ok(())
     }
 }
 
@@ -89,37 +74,65 @@ impl CypherCell {
 impl CypherCell {
     #[new]
     #[pyo3(signature = (data, volatile=false, ttl_sec=None))]
-    fn new(data: &[u8], volatile: bool, ttl_sec: Option<u64>) -> PyResult<Self> {
+    fn new(data: Bound<'_, PyAny>, volatile: bool, ttl_sec: Option<u64>) -> PyResult<Self> {
+        use pyo3::types::{PyByteArray, PyBytes, PyString};
+
+        let bytes_data: Vec<u8> = if let Ok(py_bytes) = data.extract::<Bound<'_, PyBytes>>() {
+            py_bytes.as_bytes().to_vec()
+        } else if let Ok(py_ba) = data.extract::<Bound<'_, PyByteArray>>() {
+            unsafe { py_ba.as_bytes().to_vec() }
+        } else if let Ok(py_str) = data.extract::<Bound<'_, PyString>>() {
+            py_str.encode_utf8()?.as_bytes().to_vec()
+        } else {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "data must be str, bytes, or bytearray",
+            ));
+        };
+
         let cell = CypherCell {
-            inner: Zeroizing::new(data.to_vec()),
+            inner: Zeroizing::new(bytes_data),
             volatile,
             wiped: false,
             birth: Instant::now(),
             ttl: ttl_sec.map(Duration::from_secs),
+            active_view: None,
         };
-        cell.try_lock()?; // Use ? to propagate the error to Python
+
+        cell.try_lock()?;
         Ok(cell)
     }
 
     #[classmethod]
-    #[pyo3(signature = (var_name, volatile=false))]
     fn from_env(_cls: &Bound<'_, PyType>, var_name: &str, volatile: bool) -> PyResult<Self> {
-        let mut val = std::env::var(var_name)
-            .map_err(|_| pyo3::exceptions::PyKeyError::new_err("Env var not found"))?
-            .into_bytes();
+        use std::env;
+
+        let os_val = env::var_os(var_name)
+            .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("Env var not found"))?;
+
+        #[cfg(unix)]
+        let raw_bytes = {
+            use std::os::unix::ffi::OsStringExt;
+            os_val.into_vec()
+        };
+
+        #[cfg(windows)]
+        let raw_bytes = {
+            use std::os::windows::ffi::OsStrExt;
+            let wide: Vec<u16> = os_val.encode_wide().collect();
+            let _zero_wide = Zeroizing::new(wide);
+            String::from_utf16_lossy(&_zero_wide).into_bytes()
+        };
 
         let cell = CypherCell {
-            inner: Zeroizing::new(val.clone()),
+            inner: Zeroizing::new(raw_bytes),
             volatile,
             wiped: false,
             birth: Instant::now(),
             ttl: None,
+            active_view: None,
         };
 
-        let lock_result = cell.try_lock();
-        val.zeroize(); // Clean up intermediate copy even if lock fails
-
-        lock_result?;
+        cell.try_lock()?;
         Ok(cell)
     }
 
@@ -130,123 +143,99 @@ impl CypherCell {
         self.inner.ct_eq(other).into()
     }
 
-    fn reveal<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyString>> {
-        self.check_expiry_and_status()?;
-
-        let _ = std::str::from_utf8(&self.inner)
-            .map_err(|_| pyo3::exceptions::PyValueError::new_err("Data is not valid UTF-8"))?;
-
-        let secret = PyString::new(py, unsafe { std::str::from_utf8_unchecked(&self.inner) });
-
-        if self.volatile {
-            self.wipe();
-        }
-        Ok(secret)
-    }
-
-    fn reveal_bytes<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        self.check_expiry_and_status()?;
-
-        let bytes = PyBytes::new(py, &self.inner);
-        if self.volatile {
-            self.wipe();
-        }
-        Ok(bytes)
-    }
-
-    fn reveal_masked(&self, suffix_len: usize) -> PyResult<String> {
-        if self.wiped {
-            return Err(pyo3::exceptions::PyValueError::new_err("Cell is wiped."));
-        }
-
-        let len = self.inner.len();
-        if suffix_len >= len {
-            return Ok(String::from_utf8_lossy(&self.inner).to_string());
-        }
-
-        let mask_part = "*".repeat(len - suffix_len);
-        let visible_part = String::from_utf8_lossy(&self.inner[len - suffix_len..]);
-        Ok(format!("{}{}", mask_part, visible_part))
-    }
-
     fn compare(&self, other: PyRef<'_, Self>) -> PyResult<bool> {
         if self.wiped || other.wiped {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Cannot compare: one or both cells are wiped.",
-            ));
+            return Err(pyo3::exceptions::PyValueError::new_err("Cell is wiped"));
         }
-
         if self.inner.len() != other.inner.len() {
             return Ok(false);
         }
-
-        let is_equal = self.inner.ct_eq(&*other.inner);
-
-        Ok(is_equal.into())
+        Ok(self.inner.ct_eq(&*other.inner).into())
     }
 
-    fn wipe_py(&mut self) {
-        self.wipe();
-    }
+    fn __enter__(slf: Bound<'_, Self>) -> PyResult<Bound<'_, CypherView>> {
+        let py = slf.py();
 
-    fn __bytes__<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        self.reveal_bytes(py)
-    }
+        {
+            let mut slf_mut = slf.borrow_mut();
+            if let Some(limit) = slf_mut.ttl {
+                if slf_mut.birth.elapsed() > limit {
+                    slf_mut.wipe();
+                    return Err(pyo3::exceptions::PyValueError::new_err("TTL expired"));
+                }
+            }
+            if slf_mut.wiped {
+                return Err(pyo3::exceptions::PyValueError::new_err("Cell is wiped"));
+            }
+        }
 
-    fn __eq__(&self, _other: Bound<'_, PyAny>) -> PyResult<bool> {
-        Err(pyo3::exceptions::PyTypeError::new_err(
-            "Direct equality comparison is disabled for security. Use .verify() for constant-time comparison."
-        ))
-    }
+        let cell_py: Py<CypherCell> = slf.clone().unbind();
 
-    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
+        let view = CypherView {
+            parent: cell_py,
+            is_active: true,
+        };
+        let view_bound = Bound::new(py, view)?;
+
+        slf.borrow_mut().active_view = Some(view_bound.clone().unbind());
+
+        Ok(view_bound)
     }
 
     fn __exit__(
         &mut self,
-        _exc_type: Option<Bound<'_, PyAny>>,
-        _exc_value: Option<Bound<'_, PyAny>>,
-        _traceback: Option<Bound<'_, PyAny>>,
+        py: Python<'_>,
+        _exc: Option<Bound<'_, PyAny>>,
+        _val: Option<Bound<'_, PyAny>>,
+        _tb: Option<Bound<'_, PyAny>>,
     ) {
-        self.wipe();
+        if let Some(view_py) = self.active_view.take() {
+            if let Ok(mut view) = view_py.bind(py).try_borrow_mut() {
+                view.is_active = false;
+            }
+        }
+        if self.volatile {
+            self.wipe();
+        }
     }
 
     fn __repr__(&self) -> &'static str {
         "<CypherCell: [REDACTED]>"
     }
-
-    fn __str__(&self) -> &'static str {
-        "<CypherCell: [REDACTED]>"
-    }
-
-    fn __getstate__(&self) -> PyResult<()> {
-        Err(pyo3::exceptions::PyTypeError::new_err(
-            "CypherCell objects cannot be serialized (pickled) for security reasons.",
-        ))
-    }
-
-    fn __deepcopy__(&self, _memo: &Bound<'_, PyAny>) -> PyResult<()> {
-        Err(pyo3::exceptions::PyTypeError::new_err(
-            "CypherCell objects cannot be serialized (pickled) for security reasons.",
-        ))
-    }
-
-    fn __copy__(&self) -> PyResult<()> {
-        Err(pyo3::exceptions::PyTypeError::new_err(
-            "CypherCell objects cannot be serialized (pickled) for security reasons.",
-        ))
-    }
 }
 
-impl Drop for CypherCell {
-    fn drop(&mut self) {
-        self.wipe();
+#[pymethods]
+impl CypherView {
+    fn __bytes__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        if !self.is_active {
+            return Err(pyo3::exceptions::PyValueError::new_err("View expired"));
+        }
+        let mut parent = self.parent.bind(py).borrow_mut();
+
+        if let Some(limit) = parent.ttl {
+            if parent.birth.elapsed() > limit {
+                parent.wipe();
+                return Err(pyo3::exceptions::PyValueError::new_err("TTL expired"));
+            }
+        }
+        if parent.wiped {
+            return Err(pyo3::exceptions::PyValueError::new_err("Cell is wiped"));
+        }
+
+        Ok(PyBytes::new(py, &parent.inner))
+    }
+
+    fn __str__<'py>(&self, py: Python<'py>) -> PyResult<String> {
+        let b = self.__bytes__(py)?;
+        std::str::from_utf8(b.as_bytes())
+            .map(|s| s.to_string())
+            .map_err(|_| pyo3::exceptions::PyValueError::new_err("Invalid UTF-8"))
     }
 }
 
 #[pymodule]
 fn cypher_cell(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CypherCell>()?;
+    m.add_class::<CypherView>()?;
     Ok(())
 }
